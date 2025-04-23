@@ -1,83 +1,71 @@
-from flask import Flask, render_template, request, send_file, url_for
 import os
+import uuid
 from PIL import Image
 import qrcode
-import uuid
+import streamlit as st
 
-app = Flask(__name__)
+# Configuration
 UPLOAD_FOLDER = 'uploads'
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-
-# Create folders if they don't exist
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs('static', exist_ok=True)
 
-# Dictionary to hold sessions
-sessions = {}
-
-@app.route('/')
-def index():
-    session_id = str(uuid.uuid4())[:8]  # Short random ID
-    sessions[session_id] = []  # Initialize session
+def main():
+    st.title("Scan to PDF with QR Code")
     
-    # Generate QR code URL (FIXED: Use url_for for correct URL)
-    session_url = url_for('upload', session_id=session_id, _external=True)
+    # Create a new session when the app starts or refreshes
+    if 'session_id' not in st.session_state:
+        st.session_state.session_id = str(uuid.uuid4())[:8]
+        st.session_state.images = []
     
-    # Save QR code
+    # Generate QR code URL (using Streamlit's URL)
+    session_url = f"{st.experimental_get_query_params().get('url', [''])[0]}/?session_id={st.session_state.session_id}"
+    
+    # Display QR code
+    st.subheader("Scan this QR code to upload images:")
     qr_img = qrcode.make(session_url)
-    qr_path = os.path.join('static', 'qr.png')
-    qr_img.save(qr_path)
+    st.image(qr_img.get_image(), caption="Scan to upload images", width=200)
     
-    return render_template('index.html', qr_url=qr_path, session_url=session_url)
-
-@app.route('/session/<session_id>', methods=['GET', 'POST'])
-def upload(session_id):
-    if session_id not in sessions:
-        return "Invalid session ID", 404  # Better error message
-
-    if request.method == 'POST':
-        uploaded_files = request.files.getlist('images')
-        if not uploaded_files or all(f.filename == '' for f in uploaded_files):
-            return "No files uploaded!", 400
-
-        images = []
+    # File uploader
+    st.subheader("Or upload images directly:")
+    uploaded_files = st.file_uploader(
+        "Choose images to convert to PDF",
+        type=['jpg', 'jpeg', 'png'],
+        accept_multiple_files=True
+    )
+    
+    if uploaded_files:
+        st.session_state.images = []
         for file in uploaded_files:
-            if file.filename == '':
-                continue  # Skip empty files
-            
             try:
-                # Save the image temporarily
-                temp_path = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
-                file.save(temp_path)
-                
-                # Convert to RGB (required for PDF)
-                img = Image.open(temp_path).convert('RGB')
-                images.append(img)
-                
-                # Delete the temp file
-                os.remove(temp_path)
+                img = Image.open(file).convert('RGB')
+                st.session_state.images.append(img)
+                st.success(f"Processed: {file.name}")
             except Exception as e:
-                print(f"Error processing {file.filename}: {e}")
-                continue
-
-        if not images:
-            return "No valid images found!", 400
-
-        # Generate PDF
-        pdf_path = os.path.join(app.config['UPLOAD_FOLDER'], f'{session_id}.pdf')
+                st.error(f"Error processing {file.name}: {e}")
+    
+    # Generate PDF button
+    if st.button("Generate PDF") and st.session_state.images:
+        pdf_path = os.path.join(UPLOAD_FOLDER, f"{st.session_state.session_id}.pdf")
         try:
-            images[0].save(
+            st.session_state.images[0].save(
                 pdf_path,
                 save_all=True,
-                append_images=images[1:],
+                append_images=st.session_state.images[1:],
                 quality=100
             )
-            return send_file(pdf_path, as_attachment=True)
+            
+            # Offer PDF download
+            with open(pdf_path, "rb") as f:
+                st.download_button(
+                    label="Download PDF",
+                    data=f,
+                    file_name="scanned_document.pdf",
+                    mime="application/pdf"
+                )
+            
+            # Clean up
+            os.remove(pdf_path)
         except Exception as e:
-            return f"Failed to generate PDF: {str(e)}", 500
-
-    # GET request: Show upload page
-    return render_template('upload.html', session_id=session_id)
+            st.error(f"Failed to generate PDF: {str(e)}")
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    main()
